@@ -58,7 +58,7 @@ class SamplerPipeline:
                 'position': propose_particle_move,
                 'sigma': propose_sigma_move
             }
-            move_probs = {'position': 0.7, 'sigma': 0.3}
+            move_probs = {'position': 0.9, 'sigma': 0.1}
             
         elif 'tetramer' in sampler_name.lower():
             from core.movers import propose_particle_move, propose_sigma_move, propose_tetramer_move
@@ -67,7 +67,7 @@ class SamplerPipeline:
                 'position': propose_particle_move,
                 'sigma': propose_sigma_move
             }
-            move_probs = {'tetramer': 0.60, 'position': 0.25, 'sigma': 0.15}
+            move_probs = {'tetramer': 0.7, 'position': 0.2, 'sigma': 0.1}
             
         elif 'octet' in sampler_name.lower():
             from core.movers import propose_particle_move, propose_sigma_move, propose_tetramer_move, propose_octet_move
@@ -77,7 +77,24 @@ class SamplerPipeline:
                 'position': propose_particle_move,
                 'sigma': propose_sigma_move
             }
-            move_probs = {'octet': 0.50, 'tetramer': 0.20, 'position': 0.20, 'sigma': 0.10}
+            move_probs = {'octet': 0.40, 'tetramer': 0.30, 'position': 0.20, 'sigma': 0.10}
+            
+        elif 'full' in sampler_name.lower():
+            from core.movers import (
+                propose_particle_move,
+                propose_sigma_move,
+                propose_tetramer_move,
+                propose_octet_move,
+                propose_full_move,
+            )
+            propose_fns = {
+                'full': propose_full_move,
+                'octet': propose_octet_move,
+                'tetramer': propose_tetramer_move,
+                'position': propose_particle_move,
+                'sigma': propose_sigma_move,
+            }
+            move_probs = {'full': 0.35, 'octet': 0.15, 'tetramer': 0.25, 'position': 0.15, 'sigma': 0.1}
             
         else:
             raise ValueError(f"Unknown sampler type: {sampler_name}")

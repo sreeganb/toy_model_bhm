@@ -13,7 +13,8 @@ from core.movers import (
     propose_particle_move, 
     propose_sigma_move, 
     propose_tetramer_move,
-    propose_octet_move
+    propose_octet_move,
+    propose_full_move
 )
 
 # Global EM map path (set this before running)
@@ -169,6 +170,7 @@ def run_full_sampling(
         raise ValueError("EM map not specified. Provide em_map_file or call set_em_map().")
     
     # Center particles to density COM (done once at start)
+    print("Starting full sampling... and centering if requested.")
     if center_to_density:
         print("Centering particles to density map COM...")
         state = center_state_to_density(state)
@@ -179,13 +181,15 @@ def run_full_sampling(
         "tetramer": propose_tetramer_move,
         "position": propose_particle_move,
         "sigma": propose_sigma_move,
+        "full": propose_full_move
     }
     
     move_probs = {
         "octet": 0.20,      # Large structural units
-        "tetramer": 0.40,   # Mid-level structural units
-        "position": 0.30,   # Local fine-tuning
-        "sigma": 0.10       # Parameter updates
+        "tetramer": 0.30,   # Mid-level structural units
+        "position": 0.10,   # Local fine-tuning
+        "sigma": 0.10,      # Parameter updates
+        "full": 0.30        # Full system moves
     }
 
     return run_mcmc_sampling(

@@ -65,6 +65,7 @@ class FullNLL:
         Returns:
             Centered positions dictionary
         """
+        print("Centering particles to density map COM...")
         # Calculate particle COM
         all_coords = []
         for key in ['A', 'B', 'C']:
