@@ -1,5 +1,41 @@
-**Toy Model Problem for Bayesian Hierarchical Modeling**
-python run_simulation.py to run the sampling of spherical particles
-There are 4 different levels of sampling possible, one is with moving individual particles and adding pair restraints between them,
-second is using tetrameric moves and scoring those appropriately, third is making octet moves and the global moves correspond 
-to using the EM restraint and packing the particles into a cryo-em model density. Each of these can be controlled in the run_simulation script.
+## Toy Model Problem for Bayesian Hierarchical Modeling
+
+### Overview
+The **toy model** serves as a simplified test system to explore how **Bayesian Hierarchical Modeling (BHM)** can represent and sample structural ensembles of multi-component assemblies.
+
+### Running the Simulation
+To start the sampling of spherical particles, run:
+```bash
+python run_simulation.py
+
+Sampling Levels
+
+The simulation supports four hierarchical levels of sampling, each corresponding to increasingly complex collective moves:
+
+Particle-Level Sampling
+
+Moves individual particles.
+
+Adds pairwise distance restraints between them.
+
+Tetrameric-Level Sampling
+
+Groups particles into tetramers.
+
+Applies collective “tetrameric” moves and scores them appropriately.
+
+Octet-Level Sampling
+
+Samples larger assemblies (octets).
+
+Evaluates their structural configurations collectively.
+
+Global-Level Sampling
+
+Applies cryo-EM restraints to pack particles into the target EM density.
+
+Represents large-scale, system-wide reorganization moves.
+
+Control Parameters
+
+All sampling levels and restraint combinations can be configured within the run_simulation.py script.
