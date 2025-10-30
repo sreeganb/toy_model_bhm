@@ -54,15 +54,22 @@ def main():
     # Create figure with subplots
     n_plots = len(existing_plots)
     if n_plots == 1:
-        fig, axes = plt.subplots(1, 1, figsize=(10, 8))
-        axes = [axes]
-    elif n_plots <= 4:
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-        axes = axes.flatten()
+        rows, cols = 1, 1
+    elif n_plots == 2:
+        rows, cols = 1, 2
+    elif n_plots == 3:
+        rows, cols = 2, 2  # Will have one empty subplot
     else:
         rows = (n_plots + 1) // 2
-        fig, axes = plt.subplots(rows, 2, figsize=(16, 6*rows))
-        axes = axes.flatten()
+        cols = 2
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(8*cols, 6*rows))
+    
+    # Ensure axes is always a flat array
+    if n_plots == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten() if hasattr(axes, 'flatten') else axes
     
     # Display each plot
     for idx, (plot_name, plot_path) in enumerate(existing_plots):
