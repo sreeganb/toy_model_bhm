@@ -39,6 +39,16 @@ The test generates the following plots in `tests/output/`:
 - `rmsd_vs_score_octet.png` - RMSD vs Score for Octet Sampler
 - `rmsd_vs_score_all_samplers.png` - Combined plot for all samplers
 
+### Viewing the plots:
+
+After running the test, you can view the generated plots using:
+
+```bash
+python tests/view_rmsd_plots.py
+```
+
+This will display all generated plots in a single window.
+
 ### Expected behavior:
 
 - As RMSD increases (structures get further from ideal), the score (negative log posterior) should generally increase
