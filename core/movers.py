@@ -53,17 +53,17 @@ def propose_particle_move(state, accept_rate: float = 0.5):
     - Reflect at the walls to preserve proposal symmetry.
     """
     params = SystemParameters()
-    box_size = getattr(state, "box_size", getattr(params, "box_size", 600.0))
+    box_size = getattr(state, "box_size", params.box_size)
 
     # Select particle uniformly across all types
     ptype, local_idx = _flat_index_choice(state.positions)
 
-    # Step size heuristic using radii
-    radii = getattr(params, "radii", {})
-    radius = radii.get(ptype, 1.0)
-    max_radius = max(radii.values()) if len(radii) > 0 else 1.0
+    # Step size heuristic using radii - NO DEFAULTS, MUST BE DEFINED
+    radius = params.radii[ptype]  # Will crash if not defined - that's correct!
+    max_radius = max(params.radii.values())
+    
     # Larger radius -> smaller step. Gaussian proposal.
-    step_sigma = 2.0 * (max_radius / max(radius, 1e-6))
+    step_sigma = 2.0 * (max_radius / radius)
 
     current = state.positions[ptype][local_idx]
     proposal = current + np.random.normal(0.0, step_sigma, size=3)
@@ -78,10 +78,7 @@ def propose_particle_move(state, accept_rate: float = 0.5):
 # --------------------------
 # Sigma proposal (additive Gaussian in linear sigma, reflective)
 # --------------------------
-def propose_sigma_move(
-    state,
-    accept_rate: Optional[float] = None
-):
+def propose_sigma_move(state, accept_rate: Optional[float] = None):
     """
     Non-adaptive Metropolis proposal that preserves detailed balance.
 
@@ -99,7 +96,7 @@ def propose_sigma_move(
     pair_type = random.choice(list(state.sigma.keys()))
     current_val = float(state.sigma[pair_type])
 
-    # Bounds: from prior if present, else from state.sigma_range, else defaults
+    # Bounds: from prior if present, else from state.sigma_range
     low, high = 1e-6, 20.0
     if hasattr(state, "sigma_prior") and getattr(state.sigma_prior, "sigma_ranges", None):
         low, high = state.sigma_prior.sigma_ranges.get(pair_type, (low, high))
@@ -195,7 +192,7 @@ def propose_tetramer_move(state, acceptance_rate: float = 0.5):
         return False
 
     params = SystemParameters()
-    box_size = getattr(params, 'box_size', 800.0)
+    box_size = params.box_size
     half_box = box_size / 2.0
 
     # Choose random tetramer
@@ -207,10 +204,9 @@ def propose_tetramer_move(state, acceptance_rate: float = 0.5):
     coords = np.array([state.positions[part][idx] for part, idx in particles])
     centroid = np.mean(coords, axis=0)
 
-    # Compute buffer based on particle radii (fallback to 5.0)
-    radii = getattr(params, 'radii', {})
-    tet_radii = [radii.get(p, getattr(params, 'particle_radius', 5.0)) for p, _ in particles]
-    buffer_radius = max(tet_radii) if len(tet_radii) else getattr(params, 'particle_radius', 5.0)
+    # Compute buffer based on particle radii - NO DEFAULTS
+    tet_radii = [params.radii[p] for p, _ in particles]
+    buffer_radius = max(tet_radii)
 
     max_coord = half_box - 2.0 * buffer_radius
     min_coord = -max_coord
@@ -382,7 +378,7 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
         return False
     
     params = SystemParameters()
-    box_size = getattr(params, 'box_size', 800.0)
+    box_size = params.box_size
     half_box = box_size / 2.0
     
     # Select a random octet
@@ -399,11 +395,9 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
     coords = np.array([state.positions[ptype][idx] for ptype, idx in octet_particles])
     centroid = np.mean(coords, axis=0)
     
-    # Compute buffer based on particle radii
-    radii = getattr(params, 'radii', {})
-    oct_radii = [radii.get(p, getattr(params, 'particle_radius', 5.0)) 
-                 for p, _ in octet_particles]
-    buffer_radius = max(oct_radii) if oct_radii else getattr(params, 'particle_radius', 5.0)
+    # Compute buffer based on particle radii - NO DEFAULTS
+    oct_radii = [params.radii[p] for p, _ in octet_particles]
+    buffer_radius = max(oct_radii)
     
     max_coord = half_box - 2.0 * buffer_radius
     min_coord = -max_coord
@@ -424,15 +418,13 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
         # --- TRANSLATION MOVE ---
         displacement = np.random.normal(0, trans_step * size_factor, 3)
         
-        # Apply translation to all particles in the octet
         for i, (ptype, idx) in enumerate(octet_particles):
             final_pos = coords[i] + displacement
             final_pos = np.clip(final_pos, min_coord, max_coord)
             state.positions[ptype][idx] = final_pos.astype(float)
     
-    elif rand_val < 0.9:  # 0.6 to 0.9 = 30% probability
+    elif rand_val < 0.9:
         # --- ROTATION MOVE ---
-        # Generate random rotation using Marsaglia method
         while True:
             x1, x2 = np.random.uniform(-1, 1, 2)
             if x1*x1 + x2*x2 < 1:
@@ -440,12 +432,10 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
         
         sqrt_term = np.sqrt(1 - x1*x1 - x2*x2)
         axis = np.array([2*x1*sqrt_term, 2*x2*sqrt_term, 1 - 2*(x1*x1 + x2*x2)])
-        axis = axis / max(np.linalg.norm(axis), 1e-12)  # Ensure unit vector
+        axis = axis / max(np.linalg.norm(axis), 1e-12)
         
-        # Generate rotation angle
         angle = np.random.normal(0, rot_step)
         
-        # Create rotation matrix using Rodrigues' formula
         cos_angle = np.cos(angle)
         sin_angle = np.sin(angle)
         one_minus_cos = 1 - cos_angle
@@ -457,7 +447,6 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
             [uz*ux*one_minus_cos - uy*sin_angle, uz*uy*one_minus_cos + ux*sin_angle, cos_angle + uz*uz*one_minus_cos]
         ])
         
-        # Apply rotation around centroid
         for i, (ptype, idx) in enumerate(octet_particles):
             centered = coords[i] - centroid
             rotated = rotation_matrix @ centered
@@ -465,15 +454,13 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
             final_pos = np.clip(final_pos, min_coord, max_coord)
             state.positions[ptype][idx] = final_pos.astype(float)
     
-    else:  # 0.9 to 1.0 = 10% probability
-        # --- MIXED MOVE (Translation + Rotation) ---
+    else:
+        # --- MIXED MOVE ---
         trans_scale = 0.7
         rot_scale = 0.7
         
-        # Generate displacement with reduced step size
         displacement = np.random.normal(0, trans_step * size_factor * trans_scale, 3)
         
-        # Generate rotation with reduced step size
         while True:
             x1, x2 = np.random.uniform(-1, 1, 2)
             if x1*x1 + x2*x2 < 1:
@@ -485,7 +472,6 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
         
         angle = np.random.normal(0, rot_step * rot_scale)
         
-        # Create rotation matrix
         cos_angle = np.cos(angle)
         sin_angle = np.sin(angle)
         one_minus_cos = 1 - cos_angle
@@ -497,7 +483,6 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
             [uz*ux*one_minus_cos - uy*sin_angle, uz*uy*one_minus_cos + ux*sin_angle, cos_angle + uz*uz*one_minus_cos]
         ])
         
-        # Apply combined transformation: rotate around centroid, then translate
         for i, (ptype, idx) in enumerate(octet_particles):
             centered = coords[i] - centroid
             rotated = rotation_matrix @ centered
@@ -509,19 +494,17 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
 
 def propose_full_move(state, acceptance_rate: float = 0.5):
     """
-    Propose a move that takes the coordinates of all the particles in the system
-    applies either a random translation or a random rotation to the entire system
-    with probability 0.6 and 0.4, respectively. the amount that the system is 
-    translated and rotates is obtained randomly from a very fine move to a very drastic
-    move from a normal distribution"""
+    Propose a move that translates or rotates the entire system.
+    80% translation, 20% rotation.
+    """
     params = SystemParameters()
-    box_size = getattr(params, 'box_size', 600.0)
+    box_size = params.box_size
     half_box = box_size / 2.0
 
     # Extract all particle information efficiently
     all_particles = []
-    for ptype, indices in state.positions.items():
-        for idx in range(len(indices)):
+    for ptype in ['A', 'B', 'C']:
+        for idx in range(len(state.positions[ptype])):
             all_particles.append((ptype, idx))
     
     if not all_particles:
@@ -531,11 +514,9 @@ def propose_full_move(state, acceptance_rate: float = 0.5):
     coords = np.array([state.positions[ptype][idx] for ptype, idx in all_particles])
     centroid = np.mean(coords, axis=0)
     
-    # Compute buffer based on particle radii
-    radii = getattr(params, 'radii', {})
-    all_radii = [radii.get(p, getattr(params, 'particle_radius', 5.0)) 
-                 for p, _ in all_particles]
-    buffer_radius = max(all_radii) if all_radii else getattr(params, 'particle_radius', 5.0)
+    # Compute buffer based on particle radii - NO DEFAULTS
+    all_radii = [params.radii[p] for p, _ in all_particles]
+    buffer_radius = max(all_radii)
     
     max_coord = half_box - 2.0 * buffer_radius
     min_coord = -max_coord
@@ -546,21 +527,22 @@ def propose_full_move(state, acceptance_rate: float = 0.5):
     size_factor = max(0.5, min(2.0, system_radius))
     
     # Fixed step sizes
-    trans_step = 10.0 * size_factor
-    rot_step = 10.0 * size_factor
-    # Choose move type: 60% translation, 40% rotation
+    trans_step = 0.25 * size_factor
+    rot_step = 0.25 * size_factor
+    
+    # Choose move type: 80% translation, 20% rotation
     rand_val = np.random.random()
-    if rand_val < 0.6:
+    
+    if rand_val < 0.8:
         # --- TRANSLATION MOVE ---
         displacement = np.random.normal(0, trans_step, 3)
-        # Apply translation to all particles in the system
+        
         for i, (ptype, idx) in enumerate(all_particles):
             final_pos = coords[i] + displacement
             final_pos = np.clip(final_pos, min_coord, max_coord)
             state.positions[ptype][idx] = final_pos.astype(float)
-    else:  # 0.6 to 1.0 = 40% probability
+    else:
         # --- ROTATION MOVE ---
-        # Generate random rotation using Marsaglia method
         while True:
             x1, x2 = np.random.uniform(-1, 1, 2)
             if x1*x1 + x2*x2 < 1:
@@ -568,12 +550,10 @@ def propose_full_move(state, acceptance_rate: float = 0.5):
         
         sqrt_term = np.sqrt(1 - x1*x1 - x2*x2)
         axis = np.array([2*x1*sqrt_term, 2*x2*sqrt_term, 1 - 2*(x1*x1 + x2*x2)])
-        axis = axis / max(np.linalg.norm(axis), 1e-12)  # Ensure unit vector
+        axis = axis / max(np.linalg.norm(axis), 1e-12)
         
-        # Generate rotation angle
         angle = np.random.normal(0, rot_step)
         
-        # Create rotation matrix using Rodrigues' formula
         cos_angle = np.cos(angle)
         sin_angle = np.sin(angle)
         one_minus_cos = 1 - cos_angle
@@ -585,12 +565,11 @@ def propose_full_move(state, acceptance_rate: float = 0.5):
             [uz*ux*one_minus_cos - uy*sin_angle, uz*uy*one_minus_cos + ux*sin_angle, cos_angle + uz*uz*one_minus_cos]
         ])
         
-        # Apply rotation around centroid
         for i, (ptype, idx) in enumerate(all_particles):
             centered = coords[i] - centroid
             rotated = rotation_matrix @ centered
             final_pos = centroid + rotated
             final_pos = np.clip(final_pos, min_coord, max_coord)
             state.positions[ptype][idx] = final_pos.astype(float)
+    
     return True
-# --------------------------

@@ -17,23 +17,58 @@ from core.movers import (
     propose_full_move
 )
 
-# Global EM map path (set this before running)
-EM_MAP_FILE = None
-EM_RESOLUTION = 50.0
-EM_BACKEND = 'cpu'
+# Global EM scorer (initialized ONCE before sampling)
+_EM_SCORER = None
+_EM_MAP_FILE = None
+_EM_RESOLUTION = 50.0
+_EM_BACKEND = 'cpu'
 
-def set_em_map(map_file: str, resolution: float = 50.0, backend: str = 'cpu'):
+def set_em_map_config(map_file: str, resolution: float = 50.0, backend: str = 'cpu'):
     """
-    Set the EM map file to use for scoring.
-    Call this before running full sampling.
+    Set EM map configuration globally (called before creating states).
+    The actual scorer is initialized later when we have a state.
+    
+    Args:
+        map_file: Path to EM density map
+        resolution: Resolution for Gaussian blurring (Angstroms)
+        backend: 'cpu' or 'gpu' for computation
     """
-    global EM_MAP_FILE, EM_RESOLUTION, EM_BACKEND
+    global _EM_MAP_FILE, _EM_RESOLUTION, _EM_BACKEND
+    
     if not os.path.exists(map_file):
         raise FileNotFoundError(f"EM map file not found: {map_file}")
-    EM_MAP_FILE = map_file
-    EM_RESOLUTION = resolution
-    EM_BACKEND = backend
-    print(f"EM map set to: {map_file} (resolution={resolution}Å, backend={backend})")
+    
+    _EM_MAP_FILE = map_file
+    _EM_RESOLUTION = resolution
+    _EM_BACKEND = backend
+    
+    print(f"EM map configuration set:")
+    print(f"  Map file: {map_file}")
+    print(f"  Resolution: {resolution} Å")
+    print(f"  Backend: {backend}")
+
+def _initialize_em_scorer(state: SystemState):
+    """
+    Initialize the EM scorer ONCE when we have a state.
+    Called automatically by run_full_sampling.
+    """
+    global _EM_SCORER, _EM_MAP_FILE, _EM_RESOLUTION, _EM_BACKEND
+    
+    if _EM_SCORER is not None:
+        # Already initialized
+        return
+    
+    if _EM_MAP_FILE is None:
+        raise ValueError("EM map not configured. Call set_em_map_config() first.")
+    
+    print(f"\nInitializing EM scorer (processing experimental map)...")
+    _EM_SCORER = FullNLL(
+        state, 
+        em_map_file=_EM_MAP_FILE,
+        resolution=_EM_RESOLUTION, 
+        backend=_EM_BACKEND
+    )
+    print(f"✓ EM scorer initialized\n")
 
 def center_state_to_density(state: SystemState) -> SystemState:
     """
@@ -46,22 +81,25 @@ def center_state_to_density(state: SystemState) -> SystemState:
     Returns:
         SystemState with centered positions
     """
-    if EM_MAP_FILE is None:
-        raise ValueError("EM map not set. Call set_em_map() first.")
+    global _EM_MAP_FILE
+    
+    if _EM_MAP_FILE is None:
+        raise ValueError("EM map not configured. Call set_em_map_config() first.")
     
     # Load density map temporarily to get bounds
-    density_map = mrcfile.open(EM_MAP_FILE, permissive=True)
+    density_map = mrcfile.open(_EM_MAP_FILE, permissive=True)
     
     # Calculate bins
     nx, ny, nz = density_map.header.nx, density_map.header.ny, density_map.header.nz
     vx, vy, vz = density_map.voxel_size.x, density_map.voxel_size.y, density_map.voxel_size.z
     
-    x_extent = nx * vx / 2
-    y_extent = ny * vy / 2
-    z_extent = nz * vz / 2
+    # Bins centered at origin
+    binsx = (np.linspace(0, nx, nx + 1) - nx/2) * vx
+    binsy = (np.linspace(0, ny, ny + 1) - ny/2) * vy
+    binsz = (np.linspace(0, nz, nz + 1) - nz/2) * vz
     
-    box_min = np.array([-x_extent, -y_extent, -z_extent])
-    box_max = np.array([x_extent, y_extent, z_extent])
+    box_min = np.array([binsx[0], binsy[0], binsz[0]])
+    box_max = np.array([binsx[-1], binsy[-1], binsz[-1]])
     
     # Center positions
     centered_positions = FullNLL.center_particles_to_density_com(
@@ -83,21 +121,23 @@ def neg_log_posterior(
     excluded_pairs: Optional[set] = None
 ) -> Tuple[float, float, float, float, float, float, float]:
     """
-    -log posterior = ExVol NLL + Pair NLL + Tetramer NLL + Octet NLL - CCC + (-log prior).
+    -log posterior = ExVol NLL + Pair NLL + Tetramer NLL + Octet NLL + (1-CCC) + (-log prior).
 
     The posterior includes:
     - Excluded volume constraints (soft repulsion)
     - Pairwise distance likelihoods (AA, AB, BC)
     - Tetramer formation scores (AB + 2×BC bonds)
     - Octet formation scores (inter-tetramer AA distances)
-    - EM density fit (negative cross-correlation)
+    - EM density fit (1 - CCC, range 0-2)
     - Prior on sigma parameters
 
     Returns:
         (total_score, exclusion_score, pair_score, tetramer_score, octet_score, em_score, prior_penalty)
     """
-    if EM_MAP_FILE is None:
-        raise ValueError("EM map not set. Call set_em_map() before running sampling.")
+    global _EM_SCORER
+    
+    if _EM_SCORER is None:
+        raise ValueError("EM scorer not initialized. This should not happen - run_full_sampling should initialize it.")
     
     # Excluded volume score
     exs = ExvolNLL(state.positions, kappa=100.0)
@@ -115,10 +155,10 @@ def neg_log_posterior(
     os = OctetNLL(state)
     octet_score = os.compute_score()
 
-    # EM density score (negative CCC for minimization)
-    em_scorer = FullNLL(state, em_map_file=EM_MAP_FILE, 
-                     resolution=EM_RESOLUTION, backend=EM_BACKEND)
-    em_score = em_scorer.compute_score()  # Returns -CCC
+    # EM density score (1 - CCC for minimization)
+    # Update scorer's coordinates to current state
+    _EM_SCORER.coordinates = state.positions
+    em_score = _EM_SCORER.compute_score()  # Returns 1 - CCC
 
     # Prior on sigma
     if hasattr(state, "sigma_prior") and state.sigma_prior is not None:
@@ -154,7 +194,7 @@ def run_full_sampling(
         state: Initial SystemState with positions and sigma values
         n_steps: Number of MCMC steps to run
         output_dir: Directory for trajectory and diagnostics
-        em_map_file: Path to EM density map (if None, uses global EM_MAP_FILE)
+        em_map_file: Path to EM density map (overrides global config if provided)
         em_resolution: Resolution for Gaussian blurring (Angstroms)
         em_backend: 'cpu' or 'gpu' for computation
         center_to_density: If True, center particles to density COM before sampling
@@ -163,17 +203,32 @@ def run_full_sampling(
     Returns:
         (final_state, trajectory_file_path)
     """
-    # Set EM map parameters
+    global _EM_MAP_FILE, _EM_RESOLUTION, _EM_BACKEND
+    
+    # Allow overriding global config with function arguments
     if em_map_file is not None:
-        set_em_map(em_map_file, em_resolution, em_backend)
-    elif EM_MAP_FILE is None:
-        raise ValueError("EM map not specified. Provide em_map_file or call set_em_map().")
+        set_em_map_config(em_map_file, em_resolution, em_backend)
+    elif _EM_MAP_FILE is None:
+        raise ValueError(
+            "EM map not configured. Either:\n"
+            "1. Call set_em_map_config() before running, or\n"
+            "2. Pass em_map_file argument to run_full_sampling()"
+        )
+    
+    print("="*70)
+    print("Full Sampling with EM Density Restraint")
+    print("="*70)
     
     # Center particles to density COM (done once at start)
-    print("Starting full sampling... and centering if requested.")
     if center_to_density:
-        print("Centering particles to density map COM...")
+        print("\nCentering particles to density map COM...")
         state = center_state_to_density(state)
+    
+    # Initialize EM scorer ONCE before sampling (now we have a state)
+    _initialize_em_scorer(state)
+    
+    print("Starting MCMC sampling...")
+    print("="*70 + "\n")
     
     # Define move proposals
     propose_fns = {
@@ -185,11 +240,11 @@ def run_full_sampling(
     }
     
     move_probs = {
-        "octet": 0.20,      # Large structural units
-        "tetramer": 0.30,   # Mid-level structural units
+        "octet": 0.30,      # Large structural units
+        "tetramer": 0.40,   # Mid-level structural units
         "position": 0.10,   # Local fine-tuning
         "sigma": 0.10,      # Parameter updates
-        "full": 0.30        # Full system moves
+        "full": 0.10        # Full system moves
     }
 
     return run_mcmc_sampling(
@@ -218,3 +273,6 @@ def get_tetramers(state) -> list:
     """Convenience passthrough to the tetramer finder in core.movers."""
     from core.movers import get_tetramers as _get_tetramers
     return _get_tetramers(state)
+
+# Backward compatibility
+set_em_map = set_em_map_config  # Alias for old code

@@ -1,4 +1,5 @@
 #============================================================================
+# scoring/full_score.py
 # EM density cross-correlation scoring function
 #============================================================================
 import numpy as np
@@ -32,19 +33,35 @@ class FullNLL:
         self.resolution = resolution
         self.backend = backend if (backend == 'gpu' and CUPY_AVAILABLE) else 'cpu'
         
-        # Load and parse density map
+        # Load and parse density map ONCE
         self.target_density_map = self._parse_density(em_map_file)
         self.bins = self._bins_from_density(self.target_density_map)
+        self.voxel_size = self.target_density_map.voxel_size.x
+        
+        # Pre-compute sigma for Gaussian blurring
+        self.sigma = self._resolution_to_sigma(self.resolution, self.voxel_size)
+        
+        # Pre-flatten target density for correlation (done ONCE)
+        self.target_density_flat = self.target_density_map.data.flatten()
         
         # Calculate map bounds
-        self.box_min = np.array([b[0] for b in self.bins])
-        self.box_max = np.array([b[-1] for b in self.bins])
+        self.box_min = np.array([self.bins[0][0], self.bins[1][0], self.bins[2][0]])
+        self.box_max = np.array([self.bins[0][-1], self.bins[1][-1], self.bins[2][-1]])
         
         # Get particle radii from state or use defaults
         if hasattr(state, 'params') and hasattr(state.params, 'radii'):
             self.radii = state.params.radii
         else:
             self.radii = {'A': 5.0, 'B': 5.0, 'C': 5.0}
+
+        print_debug = False
+        if print_debug == True:        
+            print(f"FullNLL initialized:")
+            print(f"  Map file: {em_map_file}")
+            print(f"  Resolution: {resolution} Å")
+            print(f"  Voxel size: {self.voxel_size} Å")
+            print(f"  Sigma: {self.sigma:.3f}")
+            print(f"  Backend: {self.backend}")
 
     @staticmethod
     def center_particles_to_density_com(positions: Dict[str, np.ndarray], 
@@ -66,6 +83,7 @@ class FullNLL:
             Centered positions dictionary
         """
         print("Centering particles to density map COM...")
+        
         # Calculate particle COM
         all_coords = []
         for key in ['A', 'B', 'C']:
@@ -92,7 +110,7 @@ class FullNLL:
         # Calculate weighted COM
         total_density = np.sum(data)
         if total_density > 1e-10:
-            # Note: data.T for correct indexing with meshgrid
+            # data.T for correct indexing with meshgrid
             density_com_x = np.sum(X * data.T) / total_density
             density_com_y = np.sum(Y * data.T) / total_density
             density_com_z = np.sum(Z * data.T) / total_density
@@ -101,7 +119,6 @@ class FullNLL:
             # Calculate required translation
             translation = density_com - particle_com
             
-            print(f"Centering particles to density COM:")
             print(f"  Particle COM: [{particle_com[0]:.2f}, {particle_com[1]:.2f}, {particle_com[2]:.2f}]")
             print(f"  Density COM:  [{density_com[0]:.2f}, {density_com[1]:.2f}, {density_com[2]:.2f}]")
             print(f"  Translation:  [{translation[0]:.2f}, {translation[1]:.2f}, {translation[2]:.2f}]")
@@ -135,14 +152,10 @@ class FullNLL:
         nx, ny, nz = density.header.nx, density.header.ny, density.header.nz
         vx, vy, vz = density.voxel_size.x, density.voxel_size.y, density.voxel_size.z
         
-        # Calculate map bounds (centered at origin)
-        x_extent = nx * vx / 2
-        y_extent = ny * vy / 2
-        z_extent = nz * vz / 2
-        
-        binsx = np.linspace(-x_extent, x_extent, nx + 1)
-        binsy = np.linspace(-y_extent, y_extent, ny + 1)
-        binsz = np.linspace(-z_extent, z_extent, nz + 1)
+        # Create bins centered at origin (matching reference implementation)
+        binsx = (np.linspace(0, nx, nx + 1) - nx/2) * vx
+        binsy = (np.linspace(0, ny, ny + 1) - ny/2) * vy
+        binsz = (np.linspace(0, nz, nz + 1) - nz/2) * vz
         
         return (binsx, binsy, binsz)
 
@@ -150,70 +163,41 @@ class FullNLL:
         """Convert resolution to sigma for Gaussian blurring."""
         return resolution / (4 * math.sqrt(2 * math.log(2))) / pixel_size
 
-    def _calc_projection_cpu(self, coords, weights, bins):
-        """Calculate projection using CPU."""
-        img, _ = np.histogramdd(coords, weights=weights, bins=bins)
+    def _calc_projection_cpu(self, coords, weights):
+        """Calculate projection using CPU (optimized - bins and sigma are pre-computed)."""
+        img, _ = np.histogramdd(coords, weights=weights, bins=self.bins)
         img = np.swapaxes(img, 0, 2)
         
-        voxel_size = bins[0][1] - bins[0][0]
-        sigma = self._resolution_to_sigma(self.resolution, voxel_size)
-        
         img_smoothed = scipy.ndimage.gaussian_filter(
-            img, sigma, truncate=4
+            img, self.sigma, truncate=4
         ).astype(np.float32)
         
         return img_smoothed
 
-    def _calc_projection_gpu(self, coords, weights, bins):
-        """Calculate projection using GPU."""
-        img, _ = cp.histogramdd(coords, weights=weights, bins=bins)
+    def _calc_projection_gpu(self, coords, weights):
+        """Calculate projection using GPU (optimized - bins and sigma are pre-computed)."""
+        img, _ = cp.histogramdd(coords, weights=weights, bins=self.bins)
         img = cp.swapaxes(img, 0, 2)
         
-        voxel_size = float(bins[0][1] - bins[0][0])
-        sigma = self._resolution_to_sigma(self.resolution, voxel_size)
-        
         img_smoothed = cupyx.scipy.ndimage.gaussian_filter(
-            img, sigma, truncate=4
+            img, self.sigma, truncate=4
         ).astype(np.float32)
         
         return img_smoothed
 
     def _pairwise_correlation_cpu(self, A, B) -> float:
-        """Calculate pairwise correlation using CPU with NaN handling."""
-        if len(A) == 0 or len(B) == 0:
-            return 0.0
-        
-        # Center the arrays
+        """Calculate pairwise correlation using CPU (exactly as reference)."""
         am = A - np.mean(A)
         bm = B - np.mean(B)
-        
-        # Calculate standard deviations
-        std_a = np.sqrt(np.sum(am**2))
-        std_b = np.sqrt(np.sum(bm**2))
-        
-        # Check for zero variance
-        if std_a < 1e-10 or std_b < 1e-10:
-            return 0.0
-        
-        # Calculate correlation
-        correlation = np.sum(am * bm) / (std_a * std_b)
-        
-        # Check for NaN
-        if not np.isfinite(correlation):
-            return 0.0
-        
-        return float(correlation)
+        return np.sum(am * bm) / (np.sqrt(np.sum(am**2)) * np.sqrt(np.sum(bm**2)))
 
     def _pairwise_correlation_gpu(self, A, B) -> float:
-        """Calculate pairwise correlation using GPU."""
+        """Calculate pairwise correlation using GPU (exactly as reference)."""
         am = A - cp.mean(A)
         bm = B - cp.mean(B)
-        
-        correlation = cp.sum(am * bm) / (
-            cp.sqrt(cp.sum(am**2)) * cp.sqrt(cp.sum(bm**2))
-        )
-        
-        return float(cp.asnumpy(correlation))
+        return cp.sum(am * bm) / (cp.sqrt(cp.sum(am**2)) * cp.sqrt(cp.sum(bm**2)))
+
+# Replace the calculate_ccc method around line 150:
 
     def calculate_ccc(self, positions: Dict[str, np.ndarray], debug_logging: bool = False) -> float:
         """
@@ -237,53 +221,89 @@ class FullNLL:
                 all_radii.append(np.full(len(positions[ptype]), radius))
         
         if not all_coords:
+            if debug_logging:
+                print("WARNING: No coordinates provided!")
             return 0.0
         
         sphere_coords = np.vstack(all_coords)
         sphere_radii = np.concatenate(all_radii)
         
-        # Use volume (radius^3) as weight
+        debug_logging = False
+        if debug_logging:
+            print(f"\nCCC Calculation Debug:")
+            print(f"  Total particles: {len(sphere_coords)}")
+            print(f"  Coordinate bounds:")
+            print(f"    X: [{sphere_coords[:, 0].min():.2f}, {sphere_coords[:, 0].max():.2f}]")
+            print(f"    Y: [{sphere_coords[:, 1].min():.2f}, {sphere_coords[:, 1].max():.2f}]")
+            print(f"    Z: [{sphere_coords[:, 2].min():.2f}, {sphere_coords[:, 2].max():.2f}]")
+            print(f"  Map bounds:")
+            print(f"    X: [{self.box_min[0]:.2f}, {self.box_max[0]:.2f}]")
+            print(f"    Y: [{self.box_min[1]:.2f}, {self.box_max[1]:.2f}]")
+            print(f"    Z: [{self.box_min[2]:.2f}, {self.box_max[2]:.2f}]")
+            print(f"  Radii: {np.unique(sphere_radii)}")
+        
+        # Use volume (radius^3) as weight (exactly as reference)
         weights = sphere_radii**3
+        
+        if debug_logging:
+            print(f"  Weight range: [{weights.min():.2f}, {weights.max():.2f}]")
         
         # Calculate projection
         if self.backend == 'gpu':
             coords_gpu = cp.asarray(sphere_coords)
             weights_gpu = cp.asarray(weights)
-            bins_gpu = [cp.asarray(b) for b in self.bins]
             
-            projection = self._calc_projection_gpu(coords_gpu, weights_gpu, bins_gpu)
-            density_data = cp.asarray(self.target_density_map.data)
+            projection = self._calc_projection_gpu(coords_gpu, weights_gpu)
+            density_data_gpu = cp.asarray(self.target_density_flat)
             
             ccc = self._pairwise_correlation_gpu(
                 projection.flatten(), 
-                density_data.flatten()
+                density_data_gpu
             )
+            ccc = float(cp.asnumpy(ccc))
         else:
-            projection = self._calc_projection_cpu(sphere_coords, weights, self.bins)
+            projection = self._calc_projection_cpu(sphere_coords, weights)
             
             ccc = self._pairwise_correlation_cpu(
                 projection.flatten(),
-                self.target_density_map.data.flatten()
+                self.target_density_flat
             )
-        
+        debug_logging = False
         if debug_logging:
-            print(f"CCC score: {ccc:.6f}")
-            print(f"  Model projection: mean={np.mean(projection):.3e}, std={np.std(projection):.3e}")
-            print(f"  Target density: mean={np.mean(self.target_density_map.data):.3e}")
+            print(f"  Model projection stats:")
+            print(f"    Shape: {projection.shape}")
+            print(f"    Mean: {np.mean(projection):.6e}")
+            print(f"    Std: {np.std(projection):.6e}")
+            print(f"    Min: {np.min(projection):.6e}")
+            print(f"    Max: {np.max(projection):.6e}")
+            print(f"    Non-zero voxels: {np.count_nonzero(projection)}/{projection.size}")
+            
+            print(f"  Target density stats:")
+            print(f"    Shape: {self.target_density_map.data.shape}")
+            print(f"    Mean: {np.mean(self.target_density_map.data):.6e}")
+            print(f"    Std: {np.std(self.target_density_map.data):.6e}")
+            print(f"    Non-zero voxels: {np.count_nonzero(self.target_density_map.data)}/{self.target_density_map.data.size}")
+            
+            print(f"  CCC result: {ccc:.6f}")
         
         return ccc
-
+    
     def compute_score(self) -> float:
         """
-        Compute negative CCC as score (for minimization).
+        Compute 1 - CCC as score (for minimization).
+        
+        Score ranges from 0 to 2:
+        - CCC = 1.0 (perfect match) → score = 0.0 (minimum)
+        - CCC = 0.0 (no correlation) → score = 1.0
+        - CCC = -1.0 (anti-correlated) → score = 2.0 (maximum)
         
         Returns:
-            Negative cross-correlation coefficient (range: -1 to 1, lower is better)
+            1 - CCC score (range: 0 to 2, lower is better)
         """
         ccc = self.calculate_ccc(self.coordinates, debug_logging=False)
         
-        # Return negative CCC so that minimization improves fit
-        return -ccc
+        # Return 1 - CCC so that minimization improves fit
+        return 1.0 - ccc
 
     def compute_score_with_breakdown(self) -> Tuple[float, Dict[str, float]]:
         """
@@ -294,7 +314,7 @@ class FullNLL:
             
         breakdown_dict contains:
             - 'ccc': Raw cross-correlation coefficient
-            - 'score': Negative CCC (for minimization)
+            - 'score': 1 - CCC (for minimization)
             - 'n_particles': Total number of particles
             - 'map_bounds': Map coordinate bounds
         """
@@ -309,7 +329,7 @@ class FullNLL:
         
         breakdown = {
             'ccc': ccc,
-            'score': -ccc,
+            'score': 1.0 - ccc,
             'n_particles': n_particles,
             'map_bounds': {
                 'x_min': float(self.box_min[0]),
@@ -321,5 +341,5 @@ class FullNLL:
             }
         }
         
-        return -ccc, breakdown
+        return 1.0 - ccc, breakdown
 #============================================================================
