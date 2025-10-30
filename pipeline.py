@@ -370,7 +370,6 @@ class SamplerPipeline:
     # =========================================================================
     # MCMC EXECUTION
     # =========================================================================
-    
     def _run_single_chain(self, args):
         """Run a single MCMC chain (called by parallel executor)"""
         state, stage, chain_id, stage_output, n_steps, chain_seed = args
@@ -382,12 +381,16 @@ class SamplerPipeline:
         chain_output = os.path.join(stage_output, f"chain_{chain_id}")
         os.makedirs(chain_output, exist_ok=True)
 
+        # **FIX: Remove 'name' from kwargs before passing to stage function**
+        stage_kwargs = stage['kwargs'].copy()
+        stage_kwargs.pop('name', None)  # Remove 'name' if it exists
+
         # Run sampler
         final_state, trajectory_file = stage['function'](
             state=state,
             n_steps=n_steps,
             output_dir=chain_output,
-            **stage['kwargs']
+            **stage_kwargs  # Now without 'name'
         )
 
         return {

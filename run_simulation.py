@@ -39,32 +39,32 @@ def main():
     )
     
     # Uncomment for additional stages
-    pipeline.add_stage(
-        run_tetramer_sampling,
-        n_steps=5000,
-        save_freq=10,
-        temp_start=10.0,
-        temp_end=1.0
-    )
-    
-    # Uncomment for additional stages
-    pipeline.add_stage(
-        run_octet_sampling,
-        n_steps=5000,
-        save_freq=20,
-        temp_start=10.0,
-        temp_end=1.0
-    )    
-    # Uncomment for additional stages
 #    pipeline.add_stage(
-#        run_full_sampling,
-#        n_steps=2000,
-#        save_freq=2,
+#        run_tetramer_sampling,
+#        n_steps=5000,
+#        save_freq=10,
 #        temp_start=10.0,
-#        temp_end=1.0,
-#        name="full",
-#        center_to_density=True
-#    )        
+#        temp_end=1.0
+#    )
+#    
+#    # Uncomment for additional stages
+#    pipeline.add_stage(
+#        run_octet_sampling,
+#        n_steps=5000,
+#        save_freq=20,
+#        temp_start=10.0,
+#        temp_end=1.0
+#    )    
+    # Uncomment for additional stages
+    pipeline.add_stage(
+        run_full_sampling,
+        n_steps=2000,
+        save_freq=2,
+        temp_start=10.0,
+        temp_end=1.0,
+        name="full",
+        center_to_density=True
+    )        
     # pipeline.add_stage(
     #     run_octet_sampling,
     #     n_steps=3000,
@@ -77,7 +77,7 @@ def main():
     results = pipeline.run(
         output_base="output",
         n_chains=8,  # Run 8 parallel chains for each stage
-        use_replica_exchange=True
+        use_replica_exchange=False
     )
     
     print("Simulation complete!")
