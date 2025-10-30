@@ -8,7 +8,6 @@ The **toy model** serves as a simplified test system to explore how **Bayesian H
 
 ### Running the Simulation
 To start the sampling of spherical particles, run:
-```bash```
 ```python run_simulation.py```
 
 Sampling Levels
