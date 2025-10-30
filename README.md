@@ -5,8 +5,8 @@ The **toy model** serves as a simplified test system to explore how **Bayesian H
 
 ### Running the Simulation
 To start the sampling of spherical particles, run:
-```bash
-python run_simulation.py
+```bash```
+```python run_simulation.py```
 
 Sampling Levels
 
@@ -39,3 +39,7 @@ Represents large-scale, system-wide reorganization moves.
 Control Parameters
 
 All sampling levels and restraint combinations can be configured within the run_simulation.py script.
+
+The structure of the ideal ground truth system is 
+
+![alt txt](https://github.com/sreeganb/toy_model_bhm/tree/main/pictures/ideal_system.png)
