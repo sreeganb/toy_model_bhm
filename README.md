@@ -43,3 +43,4 @@ All sampling levels and restraint combinations can be configured within the run_
 The structure of the ideal ground truth system is 
 
 ![alt txt](https://github.com/sreeganb/toy_model_bhm/tree/main/pictures/ideal_system.png)
+![ideal structure](pictures/ideal_system.png)
