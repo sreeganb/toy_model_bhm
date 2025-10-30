@@ -1,5 +1,8 @@
 ## Toy Model Problem for Bayesian Hierarchical Modeling
 
+The structure of the ideal ground truth system is 
+![ideal structure](pictures/ideal_system.png)
+
 ### Overview
 The **toy model** serves as a simplified test system to explore how **Bayesian Hierarchical Modeling (BHM)** can represent and sample structural ensembles of multi-component assemblies.
 
@@ -40,7 +43,4 @@ Control Parameters
 
 All sampling levels and restraint combinations can be configured within the run_simulation.py script.
 
-The structure of the ideal ground truth system is 
 
-![alt txt](https://github.com/sreeganb/toy_model_bhm/tree/main/pictures/ideal_system.png)
-![ideal structure](pictures/ideal_system.png)
