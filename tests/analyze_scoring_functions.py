@@ -43,7 +43,7 @@ class PerturbationAnalyzer:
     
 # In the __init__ method, after getting ideal coordinates (around line 70):
 
-    def __init__(self, n_target=200, jitter_range=(0.1, 25.0), max_total_score=10000.0, 
+    def __init__(self, n_target=1000, jitter_range=(0.1, 10.0), max_total_score=800.0, 
                  trajectory_file=None, em_map_file=None):
         """
         Initialize analyzer with configuration parameters.
@@ -238,7 +238,7 @@ class PerturbationAnalyzer:
             processed.add((i, j))
             
         return coords
-        
+
     def calculate_scores(self, positions, sigma_values=None):
         """
         Calculate ALL scoring functions for given coordinates.
@@ -278,38 +278,31 @@ class PerturbationAnalyzer:
         
         # 5. EM Density Score (if map file provided)
         if self.em_map_file and os.path.exists(self.em_map_file):
-            try:
-                # Create a minimal state with proper radii
-                state.params = self.params  # Give it access to correct radii
-                
-                em_scorer = FullNLL(state, self.em_map_file, resolution=50.0, backend='cpu')
-                ccc = em_scorer.calculate_ccc(positions, debug_logging=True)  # Enable debug for reference
-                scores['ccc'] = ccc
-                scores['em_score'] = 1.0 - ccc  # FIXED: Use 1 - CCC
-                
-                # Turn off debug after first call
-                if hasattr(self, '_em_debug_done'):
-                    em_scorer.calculate_ccc(positions, debug_logging=False)
-                else:
-                    self._em_debug_done = True
-                    
-            except Exception as e:
-                print(f"Warning: Could not calculate EM score: {e}")
-                import traceback
-                traceback.print_exc()
-                scores['ccc'] = 0.0
-                scores['em_score'] = 2.0
+            em_scorer = FullNLL(state, self.em_map_file, resolution=50.0, backend='cpu')
+            
+            # FullNLL.compute_score() returns (1 - CCC)
+            one_minus_ccc = em_scorer.compute_score()
+            
+            # CCC is then 1 - (1 - CCC) = CCC
+            ccc = 1.0 - one_minus_ccc
+
+            # EM score for optimization is 10000 * (1 - CCC)
+            em_score = 10000.0 * one_minus_ccc
+            
+            scores['ccc'] = ccc
+            scores['em_score'] = em_score
         else:
-            scores['ccc'] = 0.0
-            scores['em_score'] = 2.0
+            raise ValueError("EM map file not provided or does not exist.")
         
         # 6. Combined scores
         scores['pair_exvol'] = scores['pair'] + scores['exvol']
         scores['tetramer_exvol'] = scores['tetramer'] + scores['exvol']
         scores['octet_exvol'] = scores['octet'] + scores['exvol']
+        scores['full_score'] = (scores['pair'] + scores['exvol'] + 
+                               scores['tetramer'] + scores['octet'] + scores['em_score'])
         
         return scores
-                
+                    
     def calculate_rmsd_metrics(self, coords):
         """Calculate both raw and aligned RMSD values."""
         raw_rmsd = np.sqrt(np.mean(np.sum((self.ref_coords - coords)**2, axis=1)))
@@ -337,7 +330,8 @@ class PerturbationAnalyzer:
         acceptable_scores = [
             all_scores.get('pair_exvol', np.inf),
             all_scores.get('tetramer_exvol', np.inf),
-            all_scores.get('octet_exvol', np.inf)
+            all_scores.get('octet_exvol', np.inf),
+            all_scores.get('full_score', np.inf)
         ]
         return any(score <= self.max_total_score for score in acceptable_scores)
         
@@ -495,7 +489,8 @@ class PerturbationAnalyzer:
         print(f"  Tetramer+ExVol:{ref_scores.get('tetramer_exvol', 0.0):.2f}")
         print(f"  Octet:         {ref_scores.get('octet', 0.0):.2f}")
         print(f"  Octet+ExVol:   {ref_scores.get('octet_exvol', 0.0):.2f}")
-        if ref_scores.get('ccc', 0.0) != 0.0:
+        # ADD THESE TWO LINES:
+        if self.em_map_file and ref_scores.get('ccc', 0.0) != 0.0:
             print(f"  CCC:           {ref_scores.get('ccc', 0.0):.4f}")
             print(f"  EM Score:      {ref_scores.get('em_score', 0.0):.2f}")
         
@@ -514,7 +509,8 @@ class PerturbationAnalyzer:
               f"RMSD={record['rmsd_aligned']:6.2f} | "
               f"Pair={record['score_pair']:6.1f} | "
               f"Tet={record['score_tetramer']:6.1f} | "
-              f"Oct={record['score_octet']:6.1f}")
+              f"Oct={record['score_octet']:6.1f} | "
+              f"Full={record['score_full_score']:6.1f}") 
               
     def _log_trajectory_acceptance(self, record, n_processed, step):
         """Log details of a trajectory structure."""
@@ -686,6 +682,7 @@ class PerturbationAnalyzer:
         
         # Collect metrics
         rmsd = np.array([r['rmsd_aligned'] for r in structures_only])
+        print(f"size of the rmsd array: {rmsd.shape}")
         
         scores = {
             'pair': np.array([r['score_pair'] for r in structures_only]),
@@ -698,6 +695,10 @@ class PerturbationAnalyzer:
         if self.em_map_file and structures_only[0].get('score_em_score') is not None:
             scores['em'] = np.array([r['score_em_score'] for r in structures_only])
         
+        # Reference (frame 0)
+        ref = self.results[0]
+        ref_rmsd = ref.get('rmsd_aligned', 0.0)
+        
         # Set style
         import matplotlib
         matplotlib.use('Agg')
@@ -708,31 +709,58 @@ class PerturbationAnalyzer:
         
         # Create PDF with 4 pages
         with PdfPages(output_file) as pdf:
-            # Page 1: Pair Sampler
+            # Page 1: Pair Sampler (pair + exvol)
             pair_score = scores['pair'] + scores['exvol']
-            self._plot_sampler_score(rmsd, pair_score, "Pair Sampler", 
-                                    "Pair + ExVol", pdf)
+            ref_pair_score = ref.get('score_pair', 0.0) + ref.get('score_exvol', 0.0)
+            self._plot_sampler_score(
+                rmsd, pair_score, "Pair Sampler", "Pair + ExVol", pdf,
+                ref_point=(ref_rmsd, ref_pair_score)
+            )
             
-            # Page 2: Tetramer Sampler
+            # Page 2: Tetramer Sampler (pair + tetramer + exvol)
             tetramer_score = scores['pair'] + scores['tetramer'] + scores['exvol']
-            self._plot_sampler_score(rmsd, tetramer_score, "Tetramer Sampler",
-                                    "Pair + Tetramer + ExVol", pdf)
+            ref_tetramer_score = (
+                ref.get('score_pair', 0.0) +
+                ref.get('score_tetramer', 0.0) +
+                ref.get('score_exvol', 0.0)
+            )
+            self._plot_sampler_score(
+                rmsd, tetramer_score, "Tetramer Sampler", "Pair + Tetramer + ExVol", pdf,
+                ref_point=(ref_rmsd, ref_tetramer_score)
+            )
             
-            # Page 3: Octet Sampler
+            # Page 3: Octet Sampler (pair + tetramer + octet + exvol)
             octet_score = scores['pair'] + scores['tetramer'] + scores['octet'] + scores['exvol']
-            self._plot_sampler_score(rmsd, octet_score, "Octet Sampler",
-                                    "Pair + Tetramer + Octet + ExVol", pdf)
+            ref_octet_score = (
+                ref.get('score_pair', 0.0) +
+                ref.get('score_tetramer', 0.0) +
+                ref.get('score_octet', 0.0) +
+                ref.get('score_exvol', 0.0)
+            )
+            self._plot_sampler_score(
+                rmsd, octet_score, "Octet Sampler", "Pair + Tetramer + Octet + ExVol", pdf,
+                ref_point=(ref_rmsd, ref_octet_score)
+            )
             
-            # Page 4: Full Sampler
-            if 'em' in scores:
+            # Page 4: Full Sampler (pair + tetramer + octet + EM + exvol)
+            if 'em' in scores and ('score_em_score' in ref):
                 full_score = scores['pair'] + scores['tetramer'] + scores['octet'] + scores['em'] + scores['exvol']
-                self._plot_sampler_score(rmsd, full_score, "Full Sampler",
-                                        "Pair + Tetramer + Octet + EM + ExVol", pdf)
-        
+                ref_full_score = (
+                    ref.get('score_pair', 0.0) +
+                    ref.get('score_tetramer', 0.0) +
+                    ref.get('score_octet', 0.0) +
+                    ref.get('score_em_score', 0.0) +
+                    ref.get('score_exvol', 0.0)
+                )
+                self._plot_sampler_score(
+                    rmsd, full_score, "Full Sampler", "Pair + Tetramer + Octet + EM + ExVol", pdf,
+                    ref_point=(ref_rmsd, ref_full_score)
+                )
+                
         print(f"\n Saved plots: {output_file}")
         print(f"  File size: {output_path.stat().st_size / 1024:.1f} KB")
     
-    def _plot_sampler_score(self, rmsd, scores, title, score_label, pdf, zoom_max=1200):
+    def _plot_sampler_score(self, rmsd, scores, title, score_label, pdf, zoom_max=1200, ref_point=None):
         """
         Create a single score vs RMSD plot with zoomed inset.
         
@@ -743,36 +771,39 @@ class PerturbationAnalyzer:
             score_label: Y-axis label (e.g., "Pair + ExVol")
             pdf: PdfPages object
             zoom_max: Maximum score for zoomed inset
+            ref_point: Optional (x, y) tuple for the reference structure to highlight
         """
         import matplotlib.pyplot as plt
         from mpl_toolkits.axes_grid1.inset_locator import inset_axes
         
+        # set global font sizes, whatever exists, I want 2 size more to be set
+        plt.rcParams.update({
+            'font.size': 14,
+            'axes.titlesize': 16,
+            'axes.labelsize': 14,
+            'xtick.labelsize': 12,
+            'ytick.labelsize': 12
+        })
         fig, ax = plt.subplots(figsize=(10, 7))
         
         # Main plot - full range
-        ax.scatter(rmsd, scores, alpha=0.5, s=30, color='steelblue', edgecolors='black', linewidths=0.3)
+        ax.scatter(rmsd, scores, alpha=0.5, s=30, color='steelblue', edgecolors='black')
         
-        # Calculate correlation
-#        if len(rmsd) > 1:
-#            corr = np.corrcoef(rmsd, scores)[0, 1]
-#
-            # Add trend line
-#            z = np.polyfit(rmsd, scores, 1)
-#            p = np.poly1d(z)
-#            x_trend = np.linspace(rmsd.min(), rmsd.max(), 100)
-#            ax.plot(x_trend, p(x_trend), "r-", alpha=0.7, linewidth=2,
-#                   label=f'r = {corr:.3f}')
+        # Highlight reference point (red square)
+        if ref_point is not None:
+            rx, ry = ref_point
+            ax.scatter([rx], [ry], s=90, color='red', marker='s', edgecolors='black',
+                    linewidths=0.6, label='Reference')
         
         ax.set_xlabel('Aligned RMSD (Å)', fontweight='bold')
         ax.set_ylabel(f'{score_label} Score', fontweight='bold')
         ax.set_title(title, fontweight='bold', fontsize=16, pad=15)
-        ax.legend(loc='upper left', framealpha=0.9)
+        if ref_point is not None:
+            ax.legend(loc='upper left', framealpha=0.9)
         ax.grid(True, alpha=0.3)
         
         # Add zoomed inset
-        # Position: top-right corner, 40% of width and height
-        ax_inset = inset_axes(ax, width="40%", height="40%", loc='upper right',
-                             borderpad=2)
+        ax_inset = inset_axes(ax, width="40%", height="40%", loc='upper right', borderpad=2)
         
         # Filter data for zoom
         zoom_mask = scores <= zoom_max
@@ -780,16 +811,13 @@ class PerturbationAnalyzer:
             rmsd_zoom = rmsd[zoom_mask]
             scores_zoom = scores[zoom_mask]
             
-            ax_inset.scatter(rmsd_zoom, scores_zoom, alpha=0.5, s=20, 
-                           color='steelblue', edgecolors='black', linewidths=0.3)
+            ax_inset.scatter(rmsd_zoom, scores_zoom, alpha=0.5, s=20,
+                            color='steelblue', edgecolors='black', linewidths=0.3)
             
-            # Add trend line for zoomed data
- #           if len(rmsd_zoom) > 1:
- #               z_zoom = np.polyfit(rmsd_zoom, scores_zoom, 1)
- #               p_zoom = np.poly1d(z_zoom)
- #               x_trend_zoom = np.linspace(rmsd_zoom.min(), rmsd_zoom.max(), 100)
- #               ax_inset.plot(x_trend_zoom, p_zoom(x_trend_zoom), "r-", 
- #                           alpha=0.7, linewidth=1.5)
+            # Reference in inset (if within range)
+            if ref_point is not None and ry <= zoom_max:
+                ax_inset.scatter([rx], [ry], s=70, color='red', marker='s',
+                                edgecolors='black', linewidths=0.5)
             
             ax_inset.set_ylim(0, zoom_max)
             ax_inset.set_xlabel('RMSD (Å)', fontsize=10)
@@ -797,7 +825,6 @@ class PerturbationAnalyzer:
             ax_inset.set_title(f'Zoomed (Score ≤ {zoom_max})', fontsize=10)
             ax_inset.grid(True, alpha=0.3)
         else:
-            # If no points in zoom range, show message
             ax_inset.text(0.5, 0.5, f'No scores ≤ {zoom_max}',
                         ha='center', va='center', transform=ax_inset.transAxes)
             ax_inset.set_xticks([])

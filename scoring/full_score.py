@@ -8,6 +8,7 @@ import mrcfile
 import scipy.ndimage
 from typing import Dict, Tuple
 from types import SimpleNamespace
+from core.parameters import SystemParameters
 
 try:
     import cupy as cp
@@ -48,22 +49,19 @@ class FullNLL:
         self.box_min = np.array([self.bins[0][0], self.bins[1][0], self.bins[2][0]])
         self.box_max = np.array([self.bins[0][-1], self.bins[1][-1], self.bins[2][-1]])
         
-        # Get particle radii from state or use defaults
-        if hasattr(state, 'params') and hasattr(state.params, 'radii'):
-            self.radii = state.params.radii
-        else:
-            # quit the simulation in case radius is not found 
-            raise ValueError("Particle radii not found in state parameters.")
-            
-
+        # Get particle radii - ALWAYS from SystemParameters (single source of truth)
+        params = SystemParameters()
+        self.radii = params.radii
+        
         print_debug = False
-        if print_debug == True:        
+        if print_debug:        
             print(f"FullNLL initialized:")
             print(f"  Map file: {em_map_file}")
             print(f"  Resolution: {resolution} Å")
             print(f"  Voxel size: {self.voxel_size} Å")
             print(f"  Sigma: {self.sigma:.3f}")
             print(f"  Backend: {self.backend}")
+            print(f"  Radii: {self.radii}")
 
     @staticmethod
     def center_particles_to_density_com(positions: Dict[str, np.ndarray], 
@@ -199,22 +197,6 @@ class FullNLL:
         bm = B - cp.mean(B)
         return cp.sum(am * bm) / (cp.sqrt(cp.sum(am**2)) * cp.sqrt(cp.sum(bm**2)))
 
-    def check_particles_bounds(self):
-        '''
-        Take the map bounds, take the particle coordinates. 
-        Check if any particle is outside the map bounds.
-        '''
-        for ptype in ['A', 'B', 'C']:
-            if ptype in self.coordinates and len(self.coordinates[ptype]) > 0:
-                coords = self.coordinates[ptype]
-                if (np.any(coords < self.box_min) or np.any(coords > self.box_max)):
-                    print(f"WARNING: Some particles of type {ptype} are outside the map bounds!")
-
-#    def add_slope(self):
-#        '''
-#        Add a small linear term to particles that are outside the map bounds.
-#        '''
-
     def calculate_ccc(self, positions: Dict[str, np.ndarray], debug_logging: bool = False) -> float:
         """
         Calculate cross-correlation coefficient between model and density map.
@@ -233,7 +215,8 @@ class FullNLL:
         for ptype in ['A', 'B', 'C']:
             if ptype in positions and len(positions[ptype]) > 0:
                 all_coords.append(positions[ptype])
-                radius = self.radii.get(ptype, 5.0)
+                # Get radius from SystemParameters (no fallback!)
+                radius = self.radii[ptype]
                 all_radii.append(np.full(len(positions[ptype]), radius))
         
         if not all_coords:
@@ -284,7 +267,7 @@ class FullNLL:
                 projection.flatten(),
                 self.target_density_flat
             )
-        debug_logging = False
+        
         if debug_logging:
             print(f"  Model projection stats:")
             print(f"    Shape: {projection.shape}")
