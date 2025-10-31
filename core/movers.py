@@ -527,8 +527,8 @@ def propose_full_move(state, acceptance_rate: float = 0.5):
     size_factor = max(0.5, min(2.0, system_radius))
     
     # Fixed step sizes
-    trans_step = 0.25 * size_factor
-    rot_step = 0.25 * size_factor
+    trans_step = 0.1 * size_factor
+    rot_step = 0.1 * size_factor
     
     # Choose move type: 80% translation, 20% rotation
     rand_val = np.random.random()

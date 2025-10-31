@@ -43,7 +43,7 @@ class PerturbationAnalyzer:
     
 # In the __init__ method, after getting ideal coordinates (around line 70):
 
-    def __init__(self, n_target=100, jitter_range=(0.1, 25.0), max_total_score=10000.0, 
+    def __init__(self, n_target=200, jitter_range=(0.1, 25.0), max_total_score=10000.0, 
                  trajectory_file=None, em_map_file=None):
         """
         Initialize analyzer with configuration parameters.
@@ -750,18 +750,18 @@ class PerturbationAnalyzer:
         fig, ax = plt.subplots(figsize=(10, 7))
         
         # Main plot - full range
-        ax.scatter(rmsd, scores, alpha=0.5, s=30, color='steelblue', edgecolors='none')
+        ax.scatter(rmsd, scores, alpha=0.5, s=30, color='steelblue', edgecolors='black', linewidths=0.3)
         
         # Calculate correlation
-        if len(rmsd) > 1:
-            corr = np.corrcoef(rmsd, scores)[0, 1]
-            
+#        if len(rmsd) > 1:
+#            corr = np.corrcoef(rmsd, scores)[0, 1]
+#
             # Add trend line
-            z = np.polyfit(rmsd, scores, 1)
-            p = np.poly1d(z)
-            x_trend = np.linspace(rmsd.min(), rmsd.max(), 100)
-            ax.plot(x_trend, p(x_trend), "r-", alpha=0.7, linewidth=2,
-                   label=f'r = {corr:.3f}')
+#            z = np.polyfit(rmsd, scores, 1)
+#            p = np.poly1d(z)
+#            x_trend = np.linspace(rmsd.min(), rmsd.max(), 100)
+#            ax.plot(x_trend, p(x_trend), "r-", alpha=0.7, linewidth=2,
+#                   label=f'r = {corr:.3f}')
         
         ax.set_xlabel('Aligned RMSD (Å)', fontweight='bold')
         ax.set_ylabel(f'{score_label} Score', fontweight='bold')
@@ -781,15 +781,15 @@ class PerturbationAnalyzer:
             scores_zoom = scores[zoom_mask]
             
             ax_inset.scatter(rmsd_zoom, scores_zoom, alpha=0.5, s=20, 
-                           color='steelblue', edgecolors='none')
+                           color='steelblue', edgecolors='black', linewidths=0.3)
             
             # Add trend line for zoomed data
-            if len(rmsd_zoom) > 1:
-                z_zoom = np.polyfit(rmsd_zoom, scores_zoom, 1)
-                p_zoom = np.poly1d(z_zoom)
-                x_trend_zoom = np.linspace(rmsd_zoom.min(), rmsd_zoom.max(), 100)
-                ax_inset.plot(x_trend_zoom, p_zoom(x_trend_zoom), "r-", 
-                            alpha=0.7, linewidth=1.5)
+ #           if len(rmsd_zoom) > 1:
+ #               z_zoom = np.polyfit(rmsd_zoom, scores_zoom, 1)
+ #               p_zoom = np.poly1d(z_zoom)
+ #               x_trend_zoom = np.linspace(rmsd_zoom.min(), rmsd_zoom.max(), 100)
+ #               ax_inset.plot(x_trend_zoom, p_zoom(x_trend_zoom), "r-", 
+ #                           alpha=0.7, linewidth=1.5)
             
             ax_inset.set_ylim(0, zoom_max)
             ax_inset.set_xlabel('RMSD (Å)', fontsize=10)

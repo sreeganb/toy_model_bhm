@@ -31,7 +31,7 @@ def main():
     # Add sampling stages
     pipeline.add_stage(
         run_pair_sampling,
-        n_steps=20000,
+        n_steps=30000,
         save_freq=100,
         temp_start=10.0,
         temp_end=1.0
@@ -39,7 +39,7 @@ def main():
     
     pipeline.add_stage(
         run_tetramer_sampling,
-        n_steps=10000,
+        n_steps=15000,
         save_freq=100,
         temp_start=10.0,
         temp_end=1.0
@@ -47,7 +47,7 @@ def main():
     
     pipeline.add_stage(
         run_full_sampling,
-        n_steps=500,
+        n_steps=750,
         save_freq=1,
         temp_start=10.0,
         temp_end=1.0,

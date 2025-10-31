@@ -52,7 +52,9 @@ class FullNLL:
         if hasattr(state, 'params') and hasattr(state.params, 'radii'):
             self.radii = state.params.radii
         else:
-            self.radii = {'A': 5.0, 'B': 5.0, 'C': 5.0}
+            # quit the simulation in case radius is not found 
+            raise ValueError("Particle radii not found in state parameters.")
+            
 
         print_debug = False
         if print_debug == True:        
@@ -197,7 +199,21 @@ class FullNLL:
         bm = B - cp.mean(B)
         return cp.sum(am * bm) / (cp.sqrt(cp.sum(am**2)) * cp.sqrt(cp.sum(bm**2)))
 
-# Replace the calculate_ccc method around line 150:
+    def check_particles_bounds(self):
+        '''
+        Take the map bounds, take the particle coordinates. 
+        Check if any particle is outside the map bounds.
+        '''
+        for ptype in ['A', 'B', 'C']:
+            if ptype in self.coordinates and len(self.coordinates[ptype]) > 0:
+                coords = self.coordinates[ptype]
+                if (np.any(coords < self.box_min) or np.any(coords > self.box_max)):
+                    print(f"WARNING: Some particles of type {ptype} are outside the map bounds!")
+
+#    def add_slope(self):
+#        '''
+#        Add a small linear term to particles that are outside the map bounds.
+#        '''
 
     def calculate_ccc(self, positions: Dict[str, np.ndarray], debug_logging: bool = False) -> float:
         """
