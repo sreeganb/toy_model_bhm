@@ -41,6 +41,50 @@ def _flat_index_choice(positions: Dict[str, np.ndarray]) -> Tuple[str, int]:
     # Fallback (should not happen)
     return types[-1], counts[-1] - 1
 
+def _quaternion_rotation_matrix(rot_step: float) -> np.ndarray:
+    """
+    Generate random rotation matrix using quaternion algebra.
+    
+    Uses Marsaglia method for uniform random axis, then converts
+    quaternion to rotation matrix.
+    
+    Args:
+        rot_step: Standard deviation for Gaussian rotation angle
+        
+    Returns:
+        3x3 rotation matrix
+    """
+    # Marsaglia method for uniform random unit vector (axis)
+    while True:
+        x1, x2 = np.random.uniform(-1, 1, 2)
+        if x1*x1 + x2*x2 < 1:
+            break
+    
+    sqrt_term = np.sqrt(1 - x1*x1 - x2*x2)
+    axis = np.array([
+        2*x1*sqrt_term,
+        2*x2*sqrt_term,
+        1 - 2*(x1*x1 + x2*x2)
+    ])
+    axis = axis / max(np.linalg.norm(axis), 1e-12)
+    
+    # Gaussian rotation angle
+    rotation_angle = np.random.normal(0.0, rot_step)
+    
+    # Convert to quaternion
+    half_angle = rotation_angle / 2.0
+    qw = np.cos(half_angle)
+    sin_half = np.sin(half_angle)
+    qx, qy, qz = axis * sin_half
+    
+    # Quaternion to rotation matrix
+    rot_matrix = np.array([
+        [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
+        [2*(qx*qy + qw*qz), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qw*qx)],
+        [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx**2 + qy**2)]
+    ])
+    
+    return rot_matrix
 # --------------------------
 # Position proposal (additive Gaussian, reflective walls)
 # --------------------------
@@ -217,13 +261,13 @@ def propose_tetramer_move(state, acceptance_rate: float = 0.5):
     size_factor = max(0.5, min(2.0, tetramer_radius))
 
     # Fixed step sizes
-    trans_step = 0.25
+    trans_step = 0.2
     rot_step = 0.2
 
     # Choose move type: 60% translation, 30% rotation, 10% mixed
     r = np.random.random()
 
-    if r < 0.6:
+    if r < 0.7:
         # Translation
         displacement = np.random.normal(0.0, trans_step * size_factor, 3)
         for i, (part, idx) in enumerate(particles):
@@ -231,28 +275,9 @@ def propose_tetramer_move(state, acceptance_rate: float = 0.5):
             final_pos = np.clip(final_pos, min_coord, max_coord)
             state.positions[part][idx] = final_pos.astype(float)
 
-    elif r < 0.9:
-        # Rotation (Marsaglia)
-        while True:
-            x1, x2 = np.random.uniform(-1, 1, 2)
-            if x1 * x1 + x2 * x2 < 1:
-                break
-        sqrt_term = np.sqrt(1 - x1 * x1 - x2 * x2)
-        rotation_axis = np.array([2 * x1 * sqrt_term, 2 * x2 * sqrt_term, 1 - 2 * (x1 * x1 + x2 * x2)])
-        rotation_axis /= max(np.linalg.norm(rotation_axis), 1e-12)
-
-        rotation_angle = np.random.normal(0.0, rot_step)
-        half_angle = rotation_angle / 2.0
-        qw = np.cos(half_angle)
-        sin_half = np.sin(half_angle)
-        qx, qy, qz = rotation_axis * sin_half
-
-        rot_matrix = np.array([
-            [1 - 2 * (qy ** 2 + qz ** 2), 2 * (qx * qy - qw * qz), 2 * (qx * qz + qw * qy)],
-            [2 * (qx * qy + qw * qz), 1 - 2 * (qx ** 2 + qz ** 2), 2 * (qy * qz - qw * qx)],
-            [2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx ** 2 + qy ** 2)]
-        ])
-
+    else:
+        # Rotation (Using the quaternion method)
+        rot_matrix = _quaternion_rotation_matrix(rot_step)
         for i, (part, idx) in enumerate(particles):
             vec = coords[i] - centroid
             rotated = rot_matrix @ vec
@@ -260,39 +285,39 @@ def propose_tetramer_move(state, acceptance_rate: float = 0.5):
             final_pos = np.clip(final_pos, min_coord, max_coord)
             state.positions[part][idx] = final_pos.astype(float)
 
-    else:
-        # Mixed (translation + rotation) with reduced steps
-        trans_scale = 0.7
-        rot_scale = 0.7
-
-        displacement = np.random.normal(0.0, trans_step * size_factor * trans_scale, 3)
-
-        while True:
-            x1, x2 = np.random.uniform(-1, 1, 2)
-            if x1 * x1 + x2 * x2 < 1:
-                break
-        sqrt_term = np.sqrt(1 - x1 * x1 - x2 * x2)
-        rotation_axis = np.array([2 * x1 * sqrt_term, 2 * x2 * sqrt_term, 1 - 2 * (x1 * x1 + x2 * x2)])
-        rotation_axis /= max(np.linalg.norm(rotation_axis), 1e-12)
-
-        rotation_angle = np.random.normal(0.0, rot_step * rot_scale)
-        half_angle = rotation_angle / 2.0
-        qw = np.cos(half_angle)
-        sin_half = np.sin(half_angle)
-        qx, qy, qz = rotation_axis * sin_half
-
-        rot_matrix = np.array([
-            [1 - 2 * (qy ** 2 + qz ** 2), 2 * (qx * qy - qw * qz), 2 * (qx * qz + qw * qy)],
-            [2 * (qx * qy + qw * qz), 1 - 2 * (qx ** 2 + qz ** 2), 2 * (qy * qz - qw * qx)],
-            [2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx ** 2 + qy ** 2)]
-        ])
-
-        for i, (part, idx) in enumerate(particles):
-            vec = coords[i] - centroid
-            rotated = rot_matrix @ vec
-            final_pos = centroid + rotated + displacement
-            final_pos = np.clip(final_pos, min_coord, max_coord)
-            state.positions[part][idx] = final_pos.astype(float)
+#    else:
+#        # Mixed (translation + rotation) with reduced steps
+#        trans_scale = 0.15
+#        rot_scale = 0.15
+#
+#        displacement = np.random.normal(0.0, trans_step * size_factor * trans_scale, 3)
+#
+#        while True:
+#            x1, x2 = np.random.uniform(-1, 1, 2)
+#            if x1 * x1 + x2 * x2 < 1:
+#                break
+#        sqrt_term = np.sqrt(1 - x1 * x1 - x2 * x2)
+#        rotation_axis = np.array([2 * x1 * sqrt_term, 2 * x2 * sqrt_term, 1 - 2 * (x1 * x1 + x2 * x2)])
+#        rotation_axis /= max(np.linalg.norm(rotation_axis), 1e-12)
+#
+#        rotation_angle = np.random.normal(0.0, rot_step * rot_scale)
+#        half_angle = rotation_angle / 2.0
+#        qw = np.cos(half_angle)
+#        sin_half = np.sin(half_angle)
+#        qx, qy, qz = rotation_axis * sin_half
+#
+#        rot_matrix = np.array([
+#            [1 - 2 * (qy ** 2 + qz ** 2), 2 * (qx * qy - qw * qz), 2 * (qx * qz + qw * qy)],
+#            [2 * (qx * qy + qw * qz), 1 - 2 * (qx ** 2 + qz ** 2), 2 * (qy * qz - qw * qx)],
+#            [2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx ** 2 + qy ** 2)]
+#        ])
+#
+#        for i, (part, idx) in enumerate(particles):
+#            vec = coords[i] - centroid
+#            rotated = rot_matrix @ vec
+#            final_pos = centroid + rotated + displacement
+#            final_pos = np.clip(final_pos, min_coord, max_coord)
+#            state.positions[part][idx] = final_pos.astype(float)
 
     return True
 
@@ -408,13 +433,13 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
     size_factor = max(0.5, min(2.0, octet_radius))
     
     # Fixed step sizes
-    trans_step = 0.25
+    trans_step = 0.2
     rot_step = 0.2
     
     # Choose move type: 60% translation, 30% rotation, 10% mixed
     rand_val = np.random.random()
     
-    if rand_val < 0.6:
+    if rand_val < 0.7:
         # --- TRANSLATION MOVE ---
         displacement = np.random.normal(0, trans_step * size_factor, 3)
         
@@ -423,79 +448,57 @@ def propose_octet_move(state, acceptance_rate: float = 0.5):
             final_pos = np.clip(final_pos, min_coord, max_coord)
             state.positions[ptype][idx] = final_pos.astype(float)
     
-    elif rand_val < 0.9:
-        # --- ROTATION MOVE ---
-        while True:
-            x1, x2 = np.random.uniform(-1, 1, 2)
-            if x1*x1 + x2*x2 < 1:
-                break
-        
-        sqrt_term = np.sqrt(1 - x1*x1 - x2*x2)
-        axis = np.array([2*x1*sqrt_term, 2*x2*sqrt_term, 1 - 2*(x1*x1 + x2*x2)])
-        axis = axis / max(np.linalg.norm(axis), 1e-12)
-        
-        angle = np.random.normal(0, rot_step)
-        
-        cos_angle = np.cos(angle)
-        sin_angle = np.sin(angle)
-        one_minus_cos = 1 - cos_angle
-        
-        ux, uy, uz = axis
-        rotation_matrix = np.array([
-            [cos_angle + ux*ux*one_minus_cos, ux*uy*one_minus_cos - uz*sin_angle, ux*uz*one_minus_cos + uy*sin_angle],
-            [uy*ux*one_minus_cos + uz*sin_angle, cos_angle + uy*uy*one_minus_cos, uy*uz*one_minus_cos - ux*sin_angle],
-            [uz*ux*one_minus_cos - uy*sin_angle, uz*uy*one_minus_cos + ux*sin_angle, cos_angle + uz*uz*one_minus_cos]
-        ])
-        
+    else:
+        # --- ROTATION MOVE using quaternion method ---
+        rot_matrix = _quaternion_rotation_matrix(rot_step * size_factor)
         for i, (ptype, idx) in enumerate(octet_particles):
             centered = coords[i] - centroid
-            rotated = rotation_matrix @ centered
+            rotated = rot_matrix @ centered
             final_pos = centroid + rotated
             final_pos = np.clip(final_pos, min_coord, max_coord)
-            state.positions[ptype][idx] = final_pos.astype(float)
-    
-    else:
-        # --- MIXED MOVE ---
-        trans_scale = 0.7
-        rot_scale = 0.7
-        
-        displacement = np.random.normal(0, trans_step * size_factor * trans_scale, 3)
-        
-        while True:
-            x1, x2 = np.random.uniform(-1, 1, 2)
-            if x1*x1 + x2*x2 < 1:
-                break
-        
-        sqrt_term = np.sqrt(1 - x1*x1 - x2*x2)
-        axis = np.array([2*x1*sqrt_term, 2*x2*sqrt_term, 1 - 2*(x1*x1 + x2*x2)])
-        axis = axis / max(np.linalg.norm(axis), 1e-12)
-        
-        angle = np.random.normal(0, rot_step * rot_scale)
-        
-        cos_angle = np.cos(angle)
-        sin_angle = np.sin(angle)
-        one_minus_cos = 1 - cos_angle
-        
-        ux, uy, uz = axis
-        rotation_matrix = np.array([
-            [cos_angle + ux*ux*one_minus_cos, ux*uy*one_minus_cos - uz*sin_angle, ux*uz*one_minus_cos + uy*sin_angle],
-            [uy*ux*one_minus_cos + uz*sin_angle, cos_angle + uy*uy*one_minus_cos, uy*uz*one_minus_cos - ux*sin_angle],
-            [uz*ux*one_minus_cos - uy*sin_angle, uz*uy*one_minus_cos + ux*sin_angle, cos_angle + uz*uz*one_minus_cos]
-        ])
-        
-        for i, (ptype, idx) in enumerate(octet_particles):
-            centered = coords[i] - centroid
-            rotated = rotation_matrix @ centered
-            final_pos = centroid + rotated + displacement
-            final_pos = np.clip(final_pos, min_coord, max_coord)
-            state.positions[ptype][idx] = final_pos.astype(float)
+            state.positions[ptype][idx] = final_pos.astype(float)    
+#    else:
+#        # --- MIXED MOVE ---
+#        trans_scale = 0.7
+#        rot_scale = 0.7
+#        
+#        displacement = np.random.normal(0, trans_step * size_factor * trans_scale, 3)
+#        
+#        while True:
+#            x1, x2 = np.random.uniform(-1, 1, 2)
+#            if x1*x1 + x2*x2 < 1:
+#                break
+#        
+#        sqrt_term = np.sqrt(1 - x1*x1 - x2*x2)
+#        axis = np.array([2*x1*sqrt_term, 2*x2*sqrt_term, 1 - 2*(x1*x1 + x2*x2)])
+#        axis = axis / max(np.linalg.norm(axis), 1e-12)
+#        
+#        angle = np.random.normal(0, rot_step * rot_scale)
+#        
+#        cos_angle = np.cos(angle)
+#        sin_angle = np.sin(angle)
+#        one_minus_cos = 1 - cos_angle
+#        
+#        ux, uy, uz = axis
+#        rotation_matrix = np.array([
+#            [cos_angle + ux*ux*one_minus_cos, ux*uy*one_minus_cos - uz*sin_angle, ux*uz*one_minus_cos + uy*sin_angle],
+#            [uy*ux*one_minus_cos + uz*sin_angle, cos_angle + uy*uy*one_minus_cos, uy*uz*one_minus_cos - ux*sin_angle],
+#            [uz*ux*one_minus_cos - uy*sin_angle, uz*uy*one_minus_cos + ux*sin_angle, cos_angle + uz*uz*one_minus_cos]
+#        ])
+#        
+#        for i, (ptype, idx) in enumerate(octet_particles):
+#            centered = coords[i] - centroid
+#            rotated = rotation_matrix @ centered
+#            final_pos = centroid + rotated + displacement
+#            final_pos = np.clip(final_pos, min_coord, max_coord)
+#            state.positions[ptype][idx] = final_pos.astype(float)
     
     return True
 
 def propose_full_move(state, acceptance_rate: float = 0.5):
     """
     Propose a move that translates or rotates the entire system.
-    80% translation, 20% rotation.
+    70% translation, 30% rotation.
     """
     params = SystemParameters()
     box_size = params.box_size
@@ -530,10 +533,10 @@ def propose_full_move(state, acceptance_rate: float = 0.5):
     trans_step = 0.1 * size_factor
     rot_step = 0.1 * size_factor
     
-    # Choose move type: 80% translation, 20% rotation
+    # Choose move type: 70% translation, 30% rotation
     rand_val = np.random.random()
     
-    if rand_val < 0.8:
+    if rand_val < 0.7:
         # --- TRANSLATION MOVE ---
         displacement = np.random.normal(0, trans_step, 3)
         
@@ -543,33 +546,12 @@ def propose_full_move(state, acceptance_rate: float = 0.5):
             state.positions[ptype][idx] = final_pos.astype(float)
     else:
         # --- ROTATION MOVE ---
-        while True:
-            x1, x2 = np.random.uniform(-1, 1, 2)
-            if x1*x1 + x2*x2 < 1:
-                break
-        
-        sqrt_term = np.sqrt(1 - x1*x1 - x2*x2)
-        axis = np.array([2*x1*sqrt_term, 2*x2*sqrt_term, 1 - 2*(x1*x1 + x2*x2)])
-        axis = axis / max(np.linalg.norm(axis), 1e-12)
-        
-        angle = np.random.normal(0, rot_step)
-        
-        cos_angle = np.cos(angle)
-        sin_angle = np.sin(angle)
-        one_minus_cos = 1 - cos_angle
-        
-        ux, uy, uz = axis
-        rotation_matrix = np.array([
-            [cos_angle + ux*ux*one_minus_cos, ux*uy*one_minus_cos - uz*sin_angle, ux*uz*one_minus_cos + uy*sin_angle],
-            [uy*ux*one_minus_cos + uz*sin_angle, cos_angle + uy*uy*one_minus_cos, uy*uz*one_minus_cos - ux*sin_angle],
-            [uz*ux*one_minus_cos - uy*sin_angle, uz*uy*one_minus_cos + ux*sin_angle, cos_angle + uz*uz*one_minus_cos]
-        ])
-        
+        rot_matrix = _quaternion_rotation_matrix(rot_step)
         for i, (ptype, idx) in enumerate(all_particles):
             centered = coords[i] - centroid
-            rotated = rotation_matrix @ centered
+            rotated = rot_matrix @ centered
             final_pos = centroid + rotated
             final_pos = np.clip(final_pos, min_coord, max_coord)
             state.positions[ptype][idx] = final_pos.astype(float)
-    
+                
     return True
