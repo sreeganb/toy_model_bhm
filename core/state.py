@@ -73,6 +73,10 @@ class SystemState:
         if hasattr(self, 'sigma_prior'):
             state_copy.sigma_prior = self.sigma_prior
         
+        # **FIX: Don't copy EM scorer - each replica needs its own instance**
+        # Force lazy initialization on first score evaluation
+        state_copy._em_scorer = None
+        
         return state_copy
 
     @property

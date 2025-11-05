@@ -68,7 +68,7 @@ def _initialize_em_scorer(state: SystemState):
         resolution=_EM_RESOLUTION, 
         backend=_EM_BACKEND
     )
-    print(f"✓ EM scorer initialized\n")
+    print(f"EM scorer initialized\n")
 
 def center_state_to_density(state: SystemState) -> SystemState:
     """
@@ -134,10 +134,21 @@ def neg_log_posterior(
     Returns:
         (total_score, exclusion_score, pair_score, tetramer_score, octet_score, em_score, prior_penalty)
     """
-    global _EM_SCORER
-    
-    if _EM_SCORER is None:
-        raise ValueError("EM scorer not initialized. This should not happen - run_full_sampling should initialize it.")
+    # **FIX: Use per-state EM scorer instead of global**
+    # Each replica gets its own scorer instance to avoid race conditions
+    if not hasattr(state, '_em_scorer') or state._em_scorer is None:
+        if _EM_MAP_FILE is None:
+            raise ValueError(
+                "EM map not configured. Call set_em_map_config() before sampling, or "
+                "pass em_map_file to run_full_sampling()."
+            )
+        # Initialize scorer for this state instance (happens once per replica)
+        state._em_scorer = FullNLL(
+            state, 
+            em_map_file=_EM_MAP_FILE,
+            resolution=_EM_RESOLUTION, 
+            backend=_EM_BACKEND
+        )
     
     # Excluded volume score
     exs = ExvolNLL(state.positions, kappa=100.0)
@@ -155,10 +166,10 @@ def neg_log_posterior(
     os = OctetNLL(state)
     octet_score = os.compute_score()
 
-    # EM density score (1 - CCC for minimization)
-    # Update scorer's coordinates to current state
-    _EM_SCORER.coordinates = state.positions
-    em_score = _EM_SCORER.compute_score()  # Returns 1 - CCC
+    # **FIX: Use this state's own EM scorer (not global)**
+    # Each state has its own scorer instance, no race conditions
+    state._em_scorer.coordinates = state.positions
+    em_score = state._em_scorer.compute_score()  # Returns 1 - CCC
 
     # Prior on sigma
     if hasattr(state, "sigma_prior") and state.sigma_prior is not None:
@@ -168,7 +179,7 @@ def neg_log_posterior(
 
     # Total: minimize all components
     total_score = exclusion_score + pair_score + tetramer_score + octet_score + em_score + prior_penalty
-    
+
     return total_score, exclusion_score, pair_score, tetramer_score, octet_score, em_score, prior_penalty
 
 def run_full_sampling(
@@ -183,25 +194,6 @@ def run_full_sampling(
 ) -> Tuple[SystemState, str]:
     """
     Run full-system MCMC sampling with EM density restraint.
-    
-    Move hierarchy:
-      - 40% tetramer rigid-body moves (translation/rotation of 4-particle units)
-      - 30% single-particle moves (local adjustments)
-      - 20% octet rigid-body moves (translation/rotation of 8-particle units)
-      - 10% sigma parameter moves (likelihood width updates)
-
-    Args:
-        state: Initial SystemState with positions and sigma values
-        n_steps: Number of MCMC steps to run
-        output_dir: Directory for trajectory and diagnostics
-        em_map_file: Path to EM density map (overrides global config if provided)
-        em_resolution: Resolution for Gaussian blurring (Angstroms)
-        em_backend: 'cpu' or 'gpu' for computation
-        center_to_density: If True, center particles to density COM before sampling
-        **kwargs: Additional arguments passed to run_mcmc_sampling
-
-    Returns:
-        (final_state, trajectory_file_path)
     """
     global _EM_MAP_FILE, _EM_RESOLUTION, _EM_BACKEND
     
@@ -224,8 +216,9 @@ def run_full_sampling(
         print("\nCentering particles to density map COM...")
         state = center_state_to_density(state)
     
-    # Initialize EM scorer ONCE before sampling (now we have a state)
-    _initialize_em_scorer(state)
+    # **FIX: No need to initialize global scorer**
+    # Each state (including replicas) will lazy-init its own scorer
+    # The first call to neg_log_posterior() will create it
     
     print("Starting MCMC sampling...")
     print("="*70 + "\n")
@@ -240,9 +233,9 @@ def run_full_sampling(
     }
     
     move_probs = {
-        "octet": 0.30,      # Large structural units
-        "tetramer": 0.40,   # Mid-level structural units
-        "position": 0.10,   # Local fine-tuning
+        "octet": 0.10,      # Large structural units
+        "tetramer": 0.50,   # Mid-level structural units
+        "position": 0.20,   # Local fine-tuning
         "sigma": 0.10,      # Parameter updates
         "full": 0.10        # Full system moves
     }
@@ -256,7 +249,7 @@ def run_full_sampling(
         output_dir=output_dir,
         **kwargs,
     )
-
+    
 def get_octets(state) -> Tuple[list, list]:
     """
     Convenience passthrough to the octet finder in core.movers.

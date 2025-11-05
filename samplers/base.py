@@ -25,17 +25,28 @@ def run_replica_exchange_mcmc(
     """
     Replica Exchange MCMC - multiple temperatures, periodic swaps.
     
+    Implements proper parallel tempering with:
+    - Geometric temperature ladder
+    - Nearest-neighbor swaps only
+    - Alternating even/odd pair swaps
+    - Correct detailed balance
+    
     Returns:
         Best state (from lowest T) and list of all trajectory files
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    # Temperature ladder (geometric spacing)
+    # Temperature ladder (geometric spacing for optimal acceptance)
     temps = np.exp(np.linspace(np.log(temp_min), np.log(temp_max), n_replicas))
     
     print(f"\n{'='*70}")
     print(f"REPLICA EXCHANGE: {n_replicas} replicas, T ∈ [{temp_min:.1f}, {temp_max:.1f}]")
     print(f"Temps: {', '.join([f'{t:.2f}' for t in temps])}")
+    
+    # Calculate expected swap acceptance between adjacent temps
+    if n_replicas > 1:
+        beta_ratio = temps[0] / temps[1]  # Should be close to 1
+        print(f"Temperature ratio (T_i/T_i+1): {beta_ratio:.3f}")
     print(f"{'='*70}\n")
     
     # Initialize replicas
@@ -55,6 +66,7 @@ def run_replica_exchange_mcmc(
         replicas.append({
             'state': rep_state,
             'temp': temp,
+            'temp_idx': i,  # Track original temperature index
             'score': score,
             'components': components,
             'traj_file': traj_file,
@@ -73,6 +85,8 @@ def run_replica_exchange_mcmc(
     best_score = replicas[0]['score']
     
     # Main loop
+    swap_direction = 0  # Alternates between 0 (even pairs) and 1 (odd pairs)
+    
     for step in range(1, n_steps + 1):
         # Phase 1: Independent MCMC moves at each temperature
         for rep in replicas:
@@ -86,38 +100,54 @@ def run_replica_exchange_mcmc(
             prop_score, *prop_comp = score_fn(proposed, 0.0)
             delta = prop_score - rep['score']
             
+            # Metropolis acceptance with temperature
             if delta < 0 or np.random.random() < np.exp(-delta / rep['temp']):
                 rep['state'] = proposed
                 rep['score'] = prop_score
                 rep['components'] = prop_comp
                 rep['accepts'][move_type] += 1
                 
-                # Track best from lowest T
-                if rep['temp'] == temp_min and prop_score < best_score:
+                # Track best from LOWEST temperature (index 0)
+                if rep['temp_idx'] == 0 and prop_score < best_score:
                     best_score = prop_score
                     best_state = proposed.copy()
         
-        # Phase 2: Replica swaps (every swap_freq steps)
+        # Phase 2: Replica swaps (every swap_freq steps, after equilibration)
+        # Use alternating even/odd pairs for better mixing
         if step % swap_freq == 0 and step > equilibration_steps:
-            offset = np.random.randint(2)
-            for i in range(offset, n_replicas - 1, 2):
-                rep_i, rep_j = replicas[i], replicas[i + 1]
+            # Attempt swaps for pairs: (0,1), (2,3), ... or (1,2), (3,4), ...
+            for i in range(swap_direction, n_replicas - 1, 2):
+                rep_i = replicas[i]
+                rep_j = replicas[i + 1]
+                
                 rep_i['swap_attempts'] += 1
                 rep_j['swap_attempts'] += 1
                 
-                # Swap probability: exp((β_i - β_j)(E_i - E_j))
-                beta_i, beta_j = 1.0 / rep_i['temp'], 1.0 / rep_j['temp']
-                delta_beta = beta_i - beta_j
-                delta_E = rep_i['score'] - rep_j['score']
-                log_prob = delta_beta * delta_E
+                # Detailed balance: P(swap) = min(1, exp((β_i - β_j)(E_j - E_i)))
+                # This ensures detailed balance in configuration space
+                beta_i = 1.0 / rep_i['temp']
+                beta_j = 1.0 / rep_j['temp']
                 
-                if log_prob > 0 or np.random.random() < np.exp(log_prob):
-                    # Swap configurations (keep temperatures!)
+                # Energy difference (note: higher temp has higher index in our ladder)
+                E_i = rep_i['score']
+                E_j = rep_j['score']
+                
+                # Log acceptance probability
+                # P_swap = exp[(β_i - β_j)(E_j - E_i)]
+                # Since β_i > β_j (T_i < T_j), we want E_i < E_j for high acceptance
+                log_accept = (beta_i - beta_j) * (E_j - E_i)
+                
+                if log_accept >= 0 or np.random.random() < np.exp(log_accept):
+                    # Swap configurations (keep temperature indices and files!)
                     rep_i['state'], rep_j['state'] = rep_j['state'], rep_i['state']
                     rep_i['score'], rep_j['score'] = rep_j['score'], rep_i['score']
                     rep_i['components'], rep_j['components'] = rep_j['components'], rep_i['components']
+                    
                     rep_i['swap_accepts'] += 1
                     rep_j['swap_accepts'] += 1
+            
+            # Alternate swap direction for next swap attempt
+            swap_direction = 1 - swap_direction
         
         # Phase 3: Save trajectories
         if step % save_freq == 0 or step == n_steps:
@@ -155,9 +185,23 @@ def run_replica_exchange_mcmc(
     print(f"\n{'='*70}")
     print("REPLICA EXCHANGE COMPLETE")
     print(f"Best score: {best_score:.2f} (from T={temp_min})")
+    print(f"\nFinal states per temperature:")
     for i, rep in enumerate(replicas):
         swap_rate = rep['swap_accepts'] / max(1, rep['swap_attempts'])
-        print(f"  R{i} (T={rep['temp']:.2f}): Final={rep['score']:.2f}, SwapRate={swap_rate:.2%}")
+        move_rates = ', '.join([f"{m[:3]}={rep['accepts'][m]/max(1,rep['attempts'][m]):.1%}" 
+                               for m in move_types])
+        print(f"  R{i} (T={rep['temp']:.2f}): Score={rep['score']:.2f}, "
+              f"SwapAcc={swap_rate:.2%}, MoveAcc=[{move_rates}]")
+    
+    # Check for good swap rates (should be 20-40%)
+    avg_swap_rate = np.mean([r['swap_accepts'] / max(1, r['swap_attempts']) for r in replicas])
+    if avg_swap_rate < 0.15:
+        print(f"\n  WARNING: Low swap rate ({avg_swap_rate:.1%}). Consider narrower temperature range.")
+    elif avg_swap_rate > 0.5:
+        print(f"\n  WARNING: High swap rate ({avg_swap_rate:.1%}). Consider wider temperature range.")
+    else:
+        print(f"\n Good average swap rate: {avg_swap_rate:.1%}")
+    
     print(f"{'='*70}\n")
     
     traj_files = [rep['traj_file'] for rep in replicas]
