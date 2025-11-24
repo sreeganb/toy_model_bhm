@@ -20,7 +20,7 @@ class SystemState:
         # Core data
         self.positions: Dict[str, np.ndarray] = {}
         self.box_size: float = 0.0
-        
+                
         # Sigma parameters (initialized externally by pipeline via sigma.py)
         self.sigma: Dict[str, float] = {}
         self.sigma_range: Dict[str, Tuple[float, float]] = {}
@@ -36,10 +36,16 @@ class SystemState:
         
         # Additional metadata
         self.metadata: Dict[str, Any] = {}
-        
+        # Non-picklable cached scorer (lazy init elsewhere)
+        self._em_scorer: Optional[Any] = None
+                
     def __getstate__(self):
         """Custom pickle support for multiprocessing"""
-        return self.__dict__.copy()
+        state = self.__dict__.copy()
+        # Drop non-picklable handles (e.g., open mrcfile readers)
+        if '_em_scorer' in state:
+            state['_em_scorer'] = None
+        return state
     
     def __setstate__(self, state):
         """Custom unpickle support"""
@@ -49,6 +55,8 @@ class SystemState:
             self.sigma = {}
         if not hasattr(self, 'sigma_range'):
             self.sigma_range = {}
+        if not hasattr(self, '_em_scorer'):
+            self._em_scorer = None
             
     def update_positions(self, new_positions: Dict[str, np.ndarray]) -> None:
         """Update positions and clear cached structures"""
@@ -73,12 +81,14 @@ class SystemState:
         if hasattr(self, 'sigma_prior'):
             state_copy.sigma_prior = self.sigma_prior
         
-        # **FIX: Don't copy EM scorer - each replica needs its own instance**
-        # Force lazy initialization on first score evaluation
-        state_copy._em_scorer = None
+        # PERFORMANCE FIX: Share the EM scorer reference instead of destroying it.
+        # The scorer holds heavy read-only data (the map). 
+        # The sampler updates the scorer's coordinates explicitly before use.
+        if hasattr(self, '_em_scorer') and self._em_scorer is not None:
+            state_copy._em_scorer = self._em_scorer
         
         return state_copy
-
+    
     @property
     def tetramers(self) -> List[Tuple]:
         """Get tetramers (lazy evaluation)"""
